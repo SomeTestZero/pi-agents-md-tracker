@@ -1,0 +1,10 @@
+{
+	"name": "pi-agents-md-tracker",
+	"version": "0.1.0",
+	"description": "轻量 AGENTS.md 项目状态跟踪：/init 创建，自动注入维护规则持续跟踪",
+	"repository": "git@github.com:SomeTestZero/pi-agents-md-tracker.git",
+	"license": "MIT",
+	"pi": {
+		"extensions": ["./index.ts"]
+	}
+}
