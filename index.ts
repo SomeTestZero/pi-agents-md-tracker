@@ -1,21 +1,63 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 /**
- * agents-md-tracker — 轻量 AGENTS.md 项目状态跟踪
+ * agents-md-tracker — 自动维护 AGENTS.md 项目状态跟踪
  *
- * - /init 命令：让 agent 创建或增量更新当前目录的 AGENTS.md
- * - session_start：当前目录没有 AGENTS.md 时提示可用 /init
- * - before_agent_start：若 AGENTS.md 缺少维护规则标记，向系统提示注入
- *   一条简短的维护规则，保证跨会话持续跟踪项目状态
+ * - session_start：当前目录没有 AGENTS.md 时自动创建骨架（含精简约束和
+ *   subagent 规则）；已有则检查大小，超过阈值（默认 24KB / ~8k tokens）提醒精简
+ * - before_agent_start：若 AGENTS.md 缺少维护规则标记（如手写的文件），向系统
+ *   提示注入维护规则，保证跨会话持续跟踪项目状态
+ * - /init 命令保留：手动触发调研并创建/增量更新 AGENTS.md
  *
- * 文件中含 MARKER 注释即视为"已带维护规则"（/init 会写入），此时不再注入，
- * 避免与上下文文件内容重复。
+ * 文件中含 MARKER 注释即视为"已带维护规则"（自动创建和 /init 都会写入），
+ * 此时不再注入，避免与上下文文件内容重复。
  */
 
 const MARKER = "<!-- agents-md-tracker -->";
 const CONTEXT_FILES = ["AGENTS.override.md", "AGENTS.md", "CLAUDE.md"];
+/** 超过此大小（字节）提醒用户精简 AGENTS.md */
+const SIZE_WARN_BYTES = 24 * 1024;
+/** 超过此大小（估算 token）提醒用户精简 AGENTS.md */
+const SIZE_WARN_TOKENS = 8 * 1024;
+/** 粗略估算：1 token ≈ 3 字节（中英混合偏保守） */
+const BYTES_PER_TOKEN = 3;
+
+/** 供自动创建用的最小 AGENTS.md 骨架（自带维护规则，无需再注入） */
+const SKELETON = `# AGENTS.md
+
+<!-- agents-md-tracker -->
+
+## 维护规则（给 AI agent）
+
+- AGENTS.md 是给未来会话的快速上手指南，不是日志：保持精简，预计超过 ~150 行时优先删旧信息、合并重复内容，而不是继续追加。
+- 只记录跨会话有复用价值的信息（约定、命令、当前状态）；细节放代码注释或独立文档，在 AGENTS.md 里给路径即可。
+- 不要记流水账：不逐条罗列会话过程、临时改动、中间状态；只保留当前有效的结论。
+- 完成重要改动（新功能、架构调整、关键决策、发现重要的坑）后，同步更新「当前进展与状态」。
+- 发现过时内容（命令失效、结构变化）时顺手修正。
+- 遇到适合 subagent 的大型任务，按下方 subagent 规则执行。
+
+## Subagent 规则
+
+主会话的上下文是稀缺资源，其精炼优先于任务完成速度。凡预计消耗大量上下文的子任务（大规模搜索、批量文件阅读、冗长生成等），倾向派 subagent 隔离执行，主会话只保留结论。
+
+## 项目概述
+
+（待补充）
+
+## 技术栈与结构
+
+（待补充）
+
+## 常用命令
+
+（待补充）
+
+## 当前进展与状态
+
+（待补充）
+`;
 
 function findContextFile(cwd: string): string | null {
 	for (const name of CONTEXT_FILES) {
@@ -60,13 +102,25 @@ function buildInitPrompt(args: string): string {
 ${MARKER}
 ## 维护规则（给 AI agent）
 
-- 完成重要改动（新功能、架构调整、关键决策、发现重要坑）后，同步更新本文件的「当前进展与状态」部分，保持简洁，只记录对后续工作有价值的信息。
+- AGENTS.md 是给未来会话的快速上手指南，不是日志：保持精简，预计超过 ~150 行时优先删旧信息、合并重复内容，而不是继续追加。
+- 只记录跨会话有复用价值的信息（约定、命令、当前状态）；细节放代码注释或独立文档，在 AGENTS.md 里给路径即可。
+- 不要记流水账：不逐条罗列会话过程、临时改动、中间状态；只保留当前有效的结论。
+- 完成重要改动（新功能、架构调整、关键决策、发现重要的坑）后，同步更新「当前进展与状态」。
 - 发现本文件中过时的内容（命令失效、结构变化）时顺手修正。
-- 不要把本文件写成流水账；它是给未来会话的快速上手指南。
+- 遇到适合 subagent 的大型任务，按下方 subagent 规则执行。
 
-4. **如果 AGENTS.md 已存在**：做增量更新而非重写——修正过时信息、补充新发现、更新进展部分，并说明改了什么。
+## Subagent 规则
+
+主会话的上下文是稀缺资源，其精炼优先于任务完成速度。凡预计消耗大量上下文的子任务（大规模搜索、批量文件阅读、冗长生成等），倾向派 subagent 隔离执行，主会话只保留结论。
+
+4. **如果 AGENTS.md 已存在**：做增量更新而非重写——修正过时信息、补充新发现、更新进展部分，并说明改了什么。若文件明显偏大（约 150 行以上），主动精简：删除过时段落、合并重复内容，并在汇报里说明瘦身结果。
 
 完成后简要汇报：项目是什么、AGENTS.md 里写了哪些要点。`;
+}
+
+function shouldWarnSize(content: string): boolean {
+	if (content.length >= SIZE_WARN_BYTES) return true;
+	return Math.ceil(content.length / BYTES_PER_TOKEN) >= SIZE_WARN_TOKENS;
 }
 
 export default function (pi: ExtensionAPI) {
@@ -84,8 +138,26 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	pi.on("session_start", async (_event, ctx) => {
-		if (!findContextFile(ctx.cwd) && ctx.hasUI) {
-			ctx.ui.notify("agents-md-tracker: 当前目录没有 AGENTS.md，输入 /init 创建项目状态跟踪文件", "info");
+		const file = findContextFile(ctx.cwd);
+		if (!file) {
+			// 自动创建最小骨架，自带维护规则；agent 在首次对话时增量补全各节内容
+			try {
+				writeFileSync(join(ctx.cwd, "AGENTS.md"), SKELETON, "utf-8");
+				if (ctx.hasUI) {
+					ctx.ui.notify("agents-md-tracker: 已自动创建 AGENTS.md 骨架（精简约束 + subagent 规则），agent 会在对话时补全项目信息", "info");
+				}
+			} catch {
+				if (ctx.hasUI) ctx.ui.notify("agents-md-tracker: 自动创建 AGENTS.md 失败，可手动运行 /init", "warning");
+			}
+			return;
+		}
+		const content = readFileSync(file, "utf-8");
+		if (shouldWarnSize(content)) {
+			const kb = (statSync(file).size / 1024).toFixed(1);
+			const tokens = Math.ceil(content.length / BYTES_PER_TOKEN);
+			if (ctx.hasUI) {
+				ctx.ui.notify(`agents-md-tracker: AGENTS.md 已达 ${kb}KB（约 ${tokens} tokens），偏大且每次会话都会整份注入上下文，建议让 agent 精简它（删过时内容、细节外移）`, "warning");
+			}
 		}
 	});
 

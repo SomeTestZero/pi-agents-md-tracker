@@ -1,7 +1,7 @@
 {
 	"name": "pi-agents-md-tracker",
-	"version": "0.1.0",
-	"description": "轻量 AGENTS.md 项目状态跟踪：/init 创建，自动注入维护规则持续跟踪",
+	"version": "0.2.0",
+	"description": "自动创建并跟踪 AGENTS.md 项目状态：无文件时自动建骨架，超大提醒精简，自动注入维护规则与 subagent 规则",
 	"repository": "git@github.com:SomeTestZero/pi-agents-md-tracker.git",
 	"license": "MIT",
 	"pi": {
