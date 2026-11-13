@@ -36,6 +36,8 @@ const SKELETON = `# AGENTS.md
 - 不要记流水账：不逐条罗列会话过程、临时改动、中间状态；只保留当前有效的结论。
 - 完成重要改动（新功能、架构调整、关键决策、发现重要的坑）后，同步更新「当前进展与状态」。
 - 发现过时内容（命令失效、结构变化）时顺手修正。
+- 不要做大范围的暴力搜索；大范围搜索（全库 grep/find、逐目录翻找、批量读文件）之前先评估必要性与收益，能精确匹配、缩小范围就别硬扫，适合隔离的交给 subagent。
+- 重活 bash 必须带 timeout（按预计耗时留足余量），防止长时间阻塞会话。
 - 遇到适合 subagent 的大型任务，按下方 subagent 规则执行。
 
 ## Subagent 规则
@@ -67,11 +69,11 @@ function findContextFile(cwd: string): string | null {
 	return null;
 }
 
-function hasMaintenanceRule(filePath: string): boolean {
+function readContextFile(file: string): string | null {
 	try {
-		return readFileSync(filePath, "utf-8").includes(MARKER);
+		return readFileSync(file, "utf-8");
 	} catch {
-		return false;
+		return null;
 	}
 }
 
@@ -80,7 +82,19 @@ const INJECTED_RULE = `
 ${MARKER}
 项目状态跟踪（agents-md-tracker 扩展）：
 - 完成重要改动（新功能、架构调整、关键决策、发现重要的坑）后，同步更新 AGENTS.md 的「当前进展与状态」部分，只记录对后续工作有价值的信息。
-- 发现 AGENTS.md 内容过时（命令失效、结构变化）时顺手修正；保持简洁，不记流水账。`;
+- 发现 AGENTS.md 内容过时（命令失效、结构变化）时顺手修正；保持简洁，不记流水账。
+- 不要做大范围的暴力搜索，大范围搜索前先评估必要性；重活 bash 必须带 timeout。`;
+
+/** 规则版本标记：文件含它则视为已带 v0.2.2 新规则（搜索纪律 + bash timeout），无需增补注入 */
+const RULE_V2_MARKER = "重活 bash 必须带 timeout";
+
+/** 老 AGENTS.md（有维护规则但缺新规则）的一次性增补提示；agent 把规则补写进文件后自动停止 */
+const SUPPLEMENT_RULE = `
+
+${MARKER}
+规则增补（老文件升级）：把下面两条规则补写进 AGENTS.md 的「维护规则」区块（逐字写入，补完后本提示自动消失）：
+- 不要做大范围的暴力搜索；大范围搜索（全库 grep/find、逐目录翻找、批量读文件）之前先评估必要性与收益，能精确匹配、缩小范围就别硬扫，适合隔离的交给 subagent。
+- 重活 bash 必须带 timeout（按预计耗时留足余量），防止长时间阻塞会话。`;
 
 function buildInitPrompt(args: string): string {
 	const extra = args.trim();
@@ -107,6 +121,8 @@ ${MARKER}
 - 不要记流水账：不逐条罗列会话过程、临时改动、中间状态；只保留当前有效的结论。
 - 完成重要改动（新功能、架构调整、关键决策、发现重要的坑）后，同步更新「当前进展与状态」。
 - 发现本文件中过时的内容（命令失效、结构变化）时顺手修正。
+- 不要做大范围的暴力搜索；大范围搜索（全库 grep/find、逐目录翻找、批量读文件）之前先评估必要性与收益，能精确匹配、缩小范围就别硬扫，适合隔离的交给 subagent。
+- 重活 bash 必须带 timeout（按预计耗时留足余量），防止长时间阻塞会话。
 - 遇到适合 subagent 的大型任务，按下方 subagent 规则执行。
 
 ## Subagent 规则
@@ -163,7 +179,12 @@ export default function (pi: ExtensionAPI) {
 
 	pi.on("before_agent_start", async (event, ctx) => {
 		const file = findContextFile(ctx.cwd);
-		if (!file || hasMaintenanceRule(file)) return;
-		return { systemPrompt: event.systemPrompt + INJECTED_RULE };
+		if (!file) return;
+		const content = readContextFile(file);
+		if (content === null) return;
+		// 手写文件：无维护规则标记 → 注入完整维护规则
+		if (!content.includes(MARKER)) return { systemPrompt: event.systemPrompt + INJECTED_RULE };
+		// 老文件：有维护规则但缺 v0.2.2 新规则，注入增补提示，agent 补写进文件后自动停止
+		if (!content.includes(RULE_V2_MARKER)) return { systemPrompt: event.systemPrompt + SUPPLEMENT_RULE };
 	});
 }
