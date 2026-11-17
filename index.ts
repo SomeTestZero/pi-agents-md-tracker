@@ -21,7 +21,7 @@ const CONTEXT_FILES = ["AGENTS.override.md", "AGENTS.md", "CLAUDE.md"];
 const SIZE_WARN_BYTES = 24 * 1024;
 /** 超过此大小（估算 token）提醒用户精简 AGENTS.md */
 const SIZE_WARN_TOKENS = 8 * 1024;
-/** 粗略估算：1 token ≈ 3 字节（中英混合偏保守） */
+/** 粗略估算：1 token ≈ 3 字节（中英混合偏保守；实际随 tokenizer 与中英文比例浮动） */
 const BYTES_PER_TOKEN = 3;
 
 /** 供自动创建用的最小 AGENTS.md 骨架（自带维护规则，无需再注入） */
@@ -31,7 +31,7 @@ const SKELETON = `# AGENTS.md
 
 ## 维护规则（给 AI agent）
 
-- AGENTS.md 是给未来会话的快速上手指南，不是日志：保持精简，预计超过 ~150 行时优先删旧信息、合并重复内容，而不是继续追加。
+- AGENTS.md 是给未来会话的快速上手指南，不是日志：保持精简，预计超过 ~24KB（约 8k tokens）时优先删旧信息、合并重复内容，而不是继续追加。
 - 只记录跨会话有复用价值的信息（约定、命令、当前状态）；细节放代码注释或独立文档，在 AGENTS.md 里给路径即可。
 - 不要记流水账：不逐条罗列会话过程、临时改动、中间状态；只保留当前有效的结论。
 - 完成重要改动（新功能、架构调整、关键决策、发现重要的坑）后，同步更新「当前进展与状态」。
@@ -87,6 +87,8 @@ ${MARKER}
 
 /** 规则版本标记：文件含它则视为已带 v0.2.2 新规则（搜索纪律 + bash timeout），无需增补注入 */
 const RULE_V2_MARKER = "重活 bash 必须带 timeout";
+/** 规则版本标记：文件含它则视为已带 v0.2.3 新阈值（~24KB），无需增补注入 */
+const RULE_V3_MARKER = "~24KB";
 
 /** 老 AGENTS.md（有维护规则但缺新规则）的一次性增补提示；agent 把规则补写进文件后自动停止 */
 const SUPPLEMENT_RULE = `
@@ -95,6 +97,13 @@ ${MARKER}
 规则增补（老文件升级）：把下面两条规则补写进 AGENTS.md 的「维护规则」区块（逐字写入，补完后本提示自动消失）：
 - 不要做大范围的暴力搜索；大范围搜索（全库 grep/find、逐目录翻找、批量读文件）之前先评估必要性与收益，能精确匹配、缩小范围就别硬扫，适合隔离的交给 subagent。
 - 重活 bash 必须带 timeout（按预计耗时留足余量），防止长时间阻塞会话。`;
+
+/** 老 AGENTS.md（已带 v0.2.2 规则但精简阈值仍按行数）的一次性增补提示；agent 改成 24KB 后自动停止 */
+const SUPPLEMENT_V3_RULE = `
+
+${MARKER}
+规则增补（老文件升级）：把「维护规则」区块中按行数控制精简的条目（含"~150 行"）替换为下面这条（逐字写入；若没有行数条目则直接补写，补完后本提示自动消失）：
+- AGENTS.md 是给未来会话的快速上手指南，不是日志：保持精简，预计超过 ~24KB（约 8k tokens）时优先删旧信息、合并重复内容，而不是继续追加。`;
 
 function buildInitPrompt(args: string): string {
 	const extra = args.trim();
@@ -116,7 +125,7 @@ function buildInitPrompt(args: string): string {
 ${MARKER}
 ## 维护规则（给 AI agent）
 
-- AGENTS.md 是给未来会话的快速上手指南，不是日志：保持精简，预计超过 ~150 行时优先删旧信息、合并重复内容，而不是继续追加。
+- AGENTS.md 是给未来会话的快速上手指南，不是日志：保持精简，预计超过 ~24KB（约 8k tokens）时优先删旧信息、合并重复内容，而不是继续追加。
 - 只记录跨会话有复用价值的信息（约定、命令、当前状态）；细节放代码注释或独立文档，在 AGENTS.md 里给路径即可。
 - 不要记流水账：不逐条罗列会话过程、临时改动、中间状态；只保留当前有效的结论。
 - 完成重要改动（新功能、架构调整、关键决策、发现重要的坑）后，同步更新「当前进展与状态」。
@@ -129,14 +138,17 @@ ${MARKER}
 
 主会话的上下文是稀缺资源，其精炼优先于任务完成速度。凡预计消耗大量上下文的子任务，倾向派 subagent 隔离执行，主会话只保留结论。大规模搜索、批量文件阅读、冗长生成等只是常见例子，并非穷举——是否派 subagent 由 agent 根据任务特点自行评估（如上下文膨胀风险、结果可压缩性），不要只在列举的情形才使用。
 
-4. **如果 AGENTS.md 已存在**：做增量更新而非重写——修正过时信息、补充新发现、更新进展部分，并说明改了什么。若文件明显偏大（约 150 行以上），主动精简：删除过时段落、合并重复内容，并在汇报里说明瘦身结果。
+4. **如果 AGENTS.md 已存在**：做增量更新而非重写——修正过时信息、补充新发现、更新进展部分，并说明改了什么。若文件明显偏大（约 24KB 以上），主动精简：删除过时段落、合并重复内容，并在汇报里说明瘦身结果。
 
 完成后简要汇报：项目是什么、AGENTS.md 里写了哪些要点。`;
 }
 
 function shouldWarnSize(content: string): boolean {
-	if (content.length >= SIZE_WARN_BYTES) return true;
-	return Math.ceil(content.length / BYTES_PER_TOKEN) >= SIZE_WARN_TOKENS;
+	// 必须按 UTF-8 字节数算：content.length 是字符数，中文 1 字 = 3 字节，
+	// 用字符数会把中文文件的实际阈值放宽到约 3 倍（24K 字符 ≈ 72KB）
+	const bytes = Buffer.byteLength(content, "utf-8");
+	if (bytes >= SIZE_WARN_BYTES) return true;
+	return Math.ceil(bytes / BYTES_PER_TOKEN) >= SIZE_WARN_TOKENS;
 }
 
 export default function (pi: ExtensionAPI) {
@@ -170,7 +182,7 @@ export default function (pi: ExtensionAPI) {
 		const content = readFileSync(file, "utf-8");
 		if (shouldWarnSize(content)) {
 			const kb = (statSync(file).size / 1024).toFixed(1);
-			const tokens = Math.ceil(content.length / BYTES_PER_TOKEN);
+			const tokens = Math.ceil(Buffer.byteLength(content, "utf-8") / BYTES_PER_TOKEN);
 			if (ctx.hasUI) {
 				ctx.ui.notify(`agents-md-tracker: AGENTS.md 已达 ${kb}KB（约 ${tokens} tokens），偏大且每次会话都会整份注入上下文，建议让 agent 精简它（删过时内容、细节外移）`, "warning");
 			}
@@ -186,5 +198,7 @@ export default function (pi: ExtensionAPI) {
 		if (!content.includes(MARKER)) return { systemPrompt: event.systemPrompt + INJECTED_RULE };
 		// 老文件：有维护规则但缺 v0.2.2 新规则，注入增补提示，agent 补写进文件后自动停止
 		if (!content.includes(RULE_V2_MARKER)) return { systemPrompt: event.systemPrompt + SUPPLEMENT_RULE };
+		// 老文件：已有 v0.2.2 规则但精简阈值仍按行数，提示升级为 ~24KB
+		if (!content.includes(RULE_V3_MARKER)) return { systemPrompt: event.systemPrompt + SUPPLEMENT_V3_RULE };
 	});
 }
